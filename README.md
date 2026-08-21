@@ -1,5 +1,7 @@
 # Auto UI Validation
 
+[AJV migration change log](AJV-MIGRATION-CHANGELOG.md)
+
 ## Overview
 
 Auto UI is a schema-driven form system. Module and resource settings are described with JSON Schema, and the frontend uses those schemas to:
