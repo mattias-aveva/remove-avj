@@ -1,252 +1,106 @@
-# Auto UI Validation
+# Changelog: AJV Migration
 
-[AJV migration change log](AJV-MIGRATION-CHANGELOG.md)
+## Summary
 
-## Syfte
+Frontend JSON Schema validation was migrated from AJV to an internal TypeScript validator to comply with the CSP policy `script-src 'self'` without `unsafe-eval`.
 
-Auto UI är ett schema-drivet formulärsystem. JSON Scheman beskriver modulernas inställningar och används för att:
+Frontend validation and immediate user feedback remain available.
 
-- skapa formulärfält automatiskt
-- sätta standardvärden
-- hantera objekt, listor, dictionaries, credentials och resources
-- validera användarens input i frontend
-- visa fel vid rätt inställning
+## Changes
 
-Frontend-valideringen behålls eftersom användaren behöver omedelbar återkoppling under konfiguration.
+### Internal validator
 
-## CSP-bakgrund
+Created:
 
-Hostingmiljön använder:
+- `src/features/auto-ui/schema-validator.ts`
 
-```text
-script-src 'self'
-```
+The validator uses no `eval`, `new Function`, runtime code generation, or external validation library.
 
-och tillåter inte `unsafe-eval`.
+Supported project-relevant JSON Schema functionality includes:
 
-AJV ersattes eftersom runtime-kompilering av JSON Schema kan använda dynamiskt genererad kod. Den nya lösningen använder vanlig TypeScript-logik och ingen `eval`, `new Function` eller runtime-kodgenerering.
+- types and nullable `null`
+- `required`, `properties`, and `items`
+- `allOf`, `anyOf`, `oneOf`, and `not`
+- `$ref`, `enum`, and `const`
+- `pattern`, `minLength`, and `maxLength`
+- `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`
+- `multipleOf`, `minItems`, `maxItems`, and `uniqueItems`
+- `if/then` and `dependentRequired`
+- `guid`, `uuid`, and `int32`
+- objects, arrays, and `additionalProperties`
 
-## Arkitektur
-
-```text
-JSON Schema
-    |
-    v
-PropertyInfo och formulärstruktur
-    |
-    v
-Auto UI-komponenter
-    |
-    v
-Användarens settings
-    |
-    v
-Intern TypeScript-validator
-    |
-    v
-Valideringsfel tillbaka till UI
-```
-
-### Schemahantering
-
-- `src/features/auto-ui/auto-ui-schema.ts`
-- `src/features/auto-ui/module-schema.ts`
-- `src/features/auto-ui/types-auto-ui.ts`
-
-Dessa filer tolkar JSON Schema och skapar `PropertyInfo`, som innehåller typ, standardvärde, enum, struktur och UI-metadata.
-
-### Rendering
-
-- `src/modules/AutoUi/AutoUi.vue`
-- `src/modules/AutoUi/components/`
-
-`AutoUi.vue` renderar rätt inputkomponent för varje `PropertyInfo`. Ändringar skickas upp som `settingUpdate`. Validering begärs efter ändring med cirka 300 ms fördröjning.
-
-## Validering
-
-### Gemensam validator
-
-`src/features/auto-ui/schema-validator.ts`
-
-Den generella validatorn returnerar interna fel:
-
-```ts
-{
-  instancePath: string
-  keyword: string
-  params: Record<string, unknown>
-  message: string
-}
-```
-
-Den stöder projektets relevanta JSON Schema-funktionalitet:
-
-- typer och nullable `null`
-- `required`, `properties`, `items`
-- `additionalProperties`
-- `allOf`, `anyOf`, `oneOf`, `not`
-- `enum` och `const`
-- `pattern`, `minLength`, `maxLength`
-- `minimum`, `maximum`
-- `exclusiveMinimum`, `exclusiveMaximum`
-- `multipleOf`, `minItems`, `maxItems`, `uniqueItems`
-- lokala `$ref`
-- `if/then`
-- `dependentRequired`
-- `guid` och `uuid`
-- `int32`
-
-`int32` accepterar intervallet:
+The `int32` format validates the inclusive range:
 
 ```text
 -2147483648 <= value <= 2147483647
 ```
 
-Olösta lokala `$ref` returnerar ett explicit fel. De godkänns inte tyst.
+Unresolved local `$ref` references now return an explicit validation error instead of being silently accepted.
 
-### Auto UI-adapter
+### Migrated validation flows
 
-`src/features/auto-ui/auto-ui-validation.ts`
+The internal validator is now used by:
 
-`validateAutoUiSettings(...)` använder den gemensamma validatorn och anpassar felen till:
+- Auto UI settings: `src/features/auto-ui/auto-ui-validation.ts`
+- Flow Module settings: `src/features/auto-ui/module-setting-validation.ts`
+- Resource Draft data: `src/features/resource-version/validation-resource-version-data.ts`
 
-```ts
-{
-  setting: string
-  errorMessage: string
-}
-```
+Existing behavior was preserved, including:
 
-Adaptern behåller:
+- `null` handling
+- Universal Connector parameters
+- SDK-based `commonSettings`
+- resource-version checks
+- nested element validation
+- the GUID message `select a valid item from the list`
+- the existing `AutoUiValidationError` format
+- Resource Draft error messages
 
-- `null` till `undefined` för icke-nullable inställningar
-- fullständiga sökvägar för nested `required`-fel
-- GUID-meddelandet `select a valid item from the list`
-- hantering av flera fel
-- loggning och skydd mot interna valideringsfel
+### Error-path handling
 
-### Flow Module-validering
-
-`src/features/auto-ui/module-setting-validation.ts`
-
-Används för modulinställningar och Universal Connector-parametrar. Den behåller logik för:
-
-- sammanslagning av `allOf`
-- SDK-baserade `commonSettings`
-- dynamiska Universal Connector-scheman
-- resource-versioner som är arkiverade eller saknar data
-- validering av enskilda nästlade element
-
-### Resource Draft
-
-`src/features/resource-version/validation-resource-version-data.ts`
-
-Används för resource-typerna:
-
-- `Modbus`
-- `DataTriggerDefinitions`
-- `AvevaHistorian`
-
-Funktionen behåller befintliga feltexter för ogiltig JSON, felaktig inputtyp och schemafel:
-
-```text
-Failed to parse data. Expected JSON.
-Unexpected format of resource data.
-Resource contains error: ...
-```
-
-## Felvägar till UI
-
-Valideringsfel använder slash-separerade paths:
+Nested `required` errors now keep their complete path, for example:
 
 ```text
 simpleSettings/requiredStringSetting
-listSettings/listOfObjects/0/value
-dictionary/key/nestedField
 ```
 
-`src/modules/AutoUi/utils/validation-error.ts` matchar nu både exakta paths och alla verkliga child paths under en setting. Matchningen är boundary-aware, så exempelvis `settings/key` inte matchar `settings/keyOther`.
+Nested object, dictionary, and array errors are correctly matched to their UI components. Similar sibling paths are not matched accidentally.
 
-## Tester
+### Dependency cleanup
 
-### Viktiga testfiler
+Removed as direct dependencies:
 
-- `src/features/auto-ui/schema-validator.test.ts`
-- `src/features/auto-ui/test/auto-ui-validation.test.ts`
-- `src/features/auto-ui/test/auto-ui-validation.integration.test.ts`
-- `src/features/auto-ui/test/module-validation.test.ts`
-- `src/features/resource-version/validation-resource-version-data.test.ts`
-- `src/modules/AutoUi/utils/validation-error.test.ts`
+- `ajv`
+- `ajv-draft-04`
 
-Test-fixturen `validation-test-module.schema.json` kommer från backend-formatet och används för att testa realistiska schemas.
+AJV may still exist transitively in `package-lock.json` when required by other tools. Those transitive dependencies are intentionally retained.
 
-Testerna täcker bland annat:
+## Tests
 
-- giltiga och ogiltiga värden
-- required och nullable
-- nested paths
-- enum, pattern och längdgränser
-- numeriska gränser och `int32`
-- GUID/UUID
-- objekt, dictionaries och arrayer
-- `$ref`, `oneOf`, `anyOf`, `not`, `if/then` och `dependentRequired`
-- Resource Draft-parsning och schemafel
-- UI-matchning av nästlade fel
+Added or updated tests cover:
 
-## Verifiering
+- Auto UI validation against a backend-style schema
+- Flow Module and Universal Connector validation
+- Resource Draft validation for Modbus, DataTrigger, and Aveva Historian
+- `$ref`, `if/then`, `dependentRequired`, and `not`
+- nested required, object, dictionary, and array errors
+- `int32` boundaries
+- UI validation-error matching
+- JSON parsing and unsupported input types
 
-Senaste verifierade status:
+## Verification
 
-```text
-Hela testsuiten: 950 tester passerade, 1 skip
-ESLint: passerar
-TypeScript: passerar
-Produktionsbuild: passerar
-Användartester: genomförda med gott resultat
-```
+Completed checks:
 
-Testresultat kan ändras när nya tester läggs till. Aktuell terminaloutput är alltid den slutliga källan för exakta totalsiffror.
+- Full test suite: `950` tests passed, `1` skipped
+- ESLint: passed
+- TypeScript: passed
+- Production build: passed
+- Manual user testing: completed successfully
+- `package-lock.json`: valid and package versions preserved
 
-## Dependencies
+## Status
 
-AJV och `ajv-draft-04` är borttagna som direkta dependencies från:
+The functional AJV migration is complete. All production validation flows use the internal TypeScript validator and do not require `unsafe-eval` for this validation functionality.
 
-- `package.json`
-- `package-lock.json`
-
-Transitiva AJV-versioner kan fortfarande finnas i lockfilen om andra verktyg kräver dem. De ska inte tas bort manuellt, eftersom det kan bryta exempelvis build-, lint- eller editorpaket.
-
-## Underhåll
-
-Använd följande filer för framtida ändringar:
-
-| Ändring | Fil |
-|---|---|
-| Generell JSON Schema-regel | `src/features/auto-ui/schema-validator.ts` |
-| Auto UI-fel och null-hantering | `src/features/auto-ui/auto-ui-validation.ts` |
-| Modul- och Universal Connector-logik | `src/features/auto-ui/module-setting-validation.ts` |
-| Resource Draft | `src/features/resource-version/validation-resource-version-data.ts` |
-| UI-matchning av fel | `src/modules/AutoUi/utils/validation-error.ts` |
-
-Lägg alltid till ett fokuserat test när en ny schema-regel eller felväg införs.
-
-## Rekommenderade kommandon
-
-```bash
-npm run test:output
-npx tsc --noEmit
-npm run lint
-npm run build
-```
-
-Kör fokuserade tester med exempelvis:
-
-```bash
-npm run test:output -- src/features/auto-ui/test
-npm run test:output -- src/features/resource-version/validation-resource-version-data.test.ts
-npm run test:output -- src/modules/AutoUi/utils/validation-error.test.ts
-```
-
-## Slutstatus
-
-Den funktionella AJV-migreringen är genomförd och verifierad med automatiserade tester, build och användartester. Projektets produktionsvalidering använder den interna TypeScript-validatorn och kräver inte `unsafe-eval` för denna valideringsfunktion.
+The implementation is verified by automated tests, linting, TypeScript checks, a production build, and successful manual user testing. The change is ready for pull request review.
