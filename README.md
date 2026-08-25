@@ -1,106 +1,323 @@
-# Changelog: AJV Migration
+# Auto UI Validation
 
-## Summary
+[AJV migration change log](AJV-MIGRATION-CHANGELOG.md)
 
-Frontend JSON Schema validation was migrated from AJV to an internal TypeScript validator to comply with the CSP policy `script-src 'self'` without `unsafe-eval`.
+## Purpose
 
-Frontend validation and immediate user feedback remain available.
+Auto UI is a schema-driven form system. JSON Schemas describe module settings and are used to:
 
-## Changes
+- generate form fields automatically
+- provide default values
+- handle objects, lists, dictionaries, credentials, and resources
+- validate user input in the frontend
+- display errors next to the correct setting
 
-### Internal validator
+Frontend validation remains in place because users need immediate feedback while configuring modules.
 
-Created:
+## CSP Background
 
-- `src/features/auto-ui/schema-validator.ts`
+The hosting environment uses:
 
-The validator uses no `eval`, `new Function`, runtime code generation, or external validation library.
+```text
+script-src 'self'
+```
+
+and does not allow `unsafe-eval`.
+
+AJV was replaced because runtime JSON Schema compilation may use dynamically generated code. The new implementation uses regular TypeScript logic and does not use `eval`, `new Function`, or runtime code generation.
+
+## Architecture
+
+```text
+JSON Schema
+    |
+    v
+PropertyInfo and form structure
+    |
+    v
+Auto UI components
+    |
+    v
+User settings
+    |
+    v
+Internal TypeScript validator
+    |
+    v
+Validation errors returned to the UI
+```
+
+### Schema handling
+
+- `src/features/auto-ui/auto-ui-schema.ts`
+- `src/features/auto-ui/module-schema.ts`
+- `src/features/auto-ui/types-auto-ui.ts`
+
+These files interpret JSON Schema and create `PropertyInfo`, containing type, default value, enum, structure, and UI metadata.
+
+### Rendering
+
+- `src/modules/AutoUi/AutoUi.vue`
+- `src/modules/AutoUi/components/`
+
+`AutoUi.vue` renders the appropriate input component for each `PropertyInfo`. Changes are emitted as `settingUpdate`. Validation is requested after a change with a delay of approximately 300 ms.
+
+## Validation
+
+### Shared validator
+
+`src/features/auto-ui/schema-validator.ts`
+
+The general validator returns internal errors in this format:
+
+```ts
+{
+  instancePath: string
+  keyword: string
+  params: Record<string, unknown>
+  message: string
+}
+```
 
 Supported project-relevant JSON Schema functionality includes:
 
 - types and nullable `null`
-- `required`, `properties`, and `items`
-- `allOf`, `anyOf`, `oneOf`, and `not`
-- `$ref`, `enum`, and `const`
-- `pattern`, `minLength`, and `maxLength`
-- `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`
-- `multipleOf`, `minItems`, `maxItems`, and `uniqueItems`
-- `if/then` and `dependentRequired`
-- `guid`, `uuid`, and `int32`
-- objects, arrays, and `additionalProperties`
+- `required`, `properties`, `items`
+- `additionalProperties`
+- `allOf`, `anyOf`, `oneOf`, `not`
+- `enum` and `const`
+- `pattern`, `minLength`, `maxLength`
+- `minimum`, `maximum`
+- `exclusiveMinimum`, `exclusiveMaximum`
+- `multipleOf`, `minItems`, `maxItems`, `uniqueItems`
+- local `$ref` references
+- `if` / `then`
+- `dependentRequired`
+- `guid` and `uuid`
+- `int32`
 
-The `int32` format validates the inclusive range:
+The `int32` format accepts the inclusive range:
 
 ```text
 -2147483648 <= value <= 2147483647
 ```
 
-Unresolved local `$ref` references now return an explicit validation error instead of being silently accepted.
+Unresolved local `$ref` references return an explicit error and are not silently accepted.
 
-### Migrated validation flows
+### Auto UI adapter
 
-The internal validator is now used by:
+`src/features/auto-ui/auto-ui-validation.ts`
 
-- Auto UI settings: `src/features/auto-ui/auto-ui-validation.ts`
-- Flow Module settings: `src/features/auto-ui/module-setting-validation.ts`
-- Resource Draft data: `src/features/resource-version/validation-resource-version-data.ts`
+`validateAutoUiSettings(...)` uses the shared validator and adapts errors to:
 
-Existing behavior was preserved, including:
+```ts
+{
+  setting: string
+  errorMessage: string
+}
+```
 
-- `null` handling
-- Universal Connector parameters
-- SDK-based `commonSettings`
-- resource-version checks
-- nested element validation
+The adapter preserves:
+
+- conversion from `null` to `undefined` for non-nullable settings
+- complete paths for nested `required` errors
 - the GUID message `select a valid item from the list`
-- the existing `AutoUiValidationError` format
-- Resource Draft error messages
+- handling of multiple errors
+- logging and protection against internal validation failures
 
-### Error-path handling
+### Flow module validation
 
-Nested `required` errors now keep their complete path, for example:
+`src/features/auto-ui/module-setting-validation.ts`
+
+This file handles module settings and Universal Connector parameters. It preserves logic for:
+
+- merging `allOf` schemas
+- SDK-based `commonSettings`
+- dynamic Universal Connector schemas
+- archived and incomplete resource versions
+- validation of individual nested elements
+
+### Resource Draft
+
+`src/features/resource-version/validation-resource-version-data.ts`
+
+This file validates data for these resource types:
+
+- `Modbus`
+- `DataTriggerDefinitions`
+- `AvevaHistorian`
+
+It preserves the existing error messages for invalid JSON, invalid input types, and schema errors:
+
+```text
+Failed to parse data. Expected JSON.
+Unexpected format of resource data.
+Resource contains error: ...
+```
+
+## Error Paths in the UI
+
+Validation errors use slash-separated paths:
 
 ```text
 simpleSettings/requiredStringSetting
+listSettings/listOfObjects/0/value
+dictionary/key/nestedField
 ```
 
-Nested object, dictionary, and array errors are correctly matched to their UI components. Similar sibling paths are not matched accidentally.
+`src/modules/AutoUi/utils/validation-error.ts` matches both exact paths and all actual child paths below a setting. Matching is path-boundary aware, so `settings/key` does not incorrectly match `settings/keyOther`.
 
-### Dependency cleanup
+## Validation Flow
 
-Removed as direct dependencies:
+### Flow module settings
 
-- `ajv`
-- `ajv-draft-04`
+```text
+Module schema
+    |
+    v
+Schema merge and module-specific adjustments
+    |
+    v
+Current module settings
+    |
+    v
+validateJsonSchema(...)
+    |
+    v
+AutoUiValidationError[]
+    |
+    v
+FlowModuleAutoUi -> AutoUi -> input components
+```
 
-AJV may still exist transitively in `package-lock.json` when required by other tools. Those transitive dependencies are intentionally retained.
+### Resource Draft
+
+```text
+Resource Draft input
+    |
+    v
+Parse JSON if necessary
+    |
+    v
+Select resource schema
+    |
+    v
+validateJsonSchema(...)
+    |
+    v
+Resource contains error: ...
+```
 
 ## Tests
 
-Added or updated tests cover:
+### Important test files
 
-- Auto UI validation against a backend-style schema
-- Flow Module and Universal Connector validation
-- Resource Draft validation for Modbus, DataTrigger, and Aveva Historian
-- `$ref`, `if/then`, `dependentRequired`, and `not`
-- nested required, object, dictionary, and array errors
-- `int32` boundaries
-- UI validation-error matching
-- JSON parsing and unsupported input types
+- `src/features/auto-ui/schema-validator.test.ts`
+- `src/features/auto-ui/test/auto-ui-validation.test.ts`
+- `src/features/auto-ui/test/auto-ui-validation.integration.test.ts`
+- `src/features/auto-ui/test/module-validation.test.ts`
+- `src/features/resource-version/validation-resource-version-data.test.ts`
+- `src/modules/AutoUi/utils/validation-error.test.ts`
 
-## Verification
+The `validation-test-module.schema.json` fixture represents the backend schema format and is used for realistic schema tests.
 
-Completed checks:
+Tests cover:
 
-- Full test suite: `950` tests passed, `1` skipped
-- ESLint: passed
-- TypeScript: passed
-- Production build: passed
-- Manual user testing: completed successfully
-- `package-lock.json`: valid and package versions preserved
+- valid and invalid values
+- required and nullable values
+- nested paths
+- enum, pattern, and length limits
+- numeric limits and `int32`
+- GUID/UUID
+- objects, dictionaries, and arrays
+- `$ref`, `oneOf`, `anyOf`, `not`, `if/then`, and `dependentRequired`
+- Resource Draft parsing and schema errors
+- UI matching of nested errors
 
-## Status
+### Recommended commands
 
-The functional AJV migration is complete. All production validation flows use the internal TypeScript validator and do not require `unsafe-eval` for this validation functionality.
+Run all tests:
 
-The implementation is verified by automated tests, linting, TypeScript checks, a production build, and successful manual user testing. The change is ready for pull request review.
+```bash
+npm run test:output
+```
+
+Run Auto UI tests:
+
+```bash
+npm run test:output -- src/features/auto-ui/test
+```
+
+Run Resource Draft tests:
+
+```bash
+npm run test:output -- src/features/resource-version/validation-resource-version-data.test.ts
+```
+
+Run UI error matching tests:
+
+```bash
+npm run test:output -- src/modules/AutoUi/utils/validation-error.test.ts
+```
+
+Run the TypeScript check:
+
+```bash
+npx tsc --noEmit
+```
+
+Run lint for affected files:
+
+```bash
+npx eslint src/features/auto-ui/auto-ui-validation.ts src/features/auto-ui/module-setting-validation.ts src/features/auto-ui/schema-validator.ts src/features/resource-version/validation-resource-version-data.ts src/modules/AutoUi/utils/validation-error.ts --max-warnings 0
+```
+
+Build the production bundle:
+
+```bash
+npm run build
+```
+
+## Verification Status
+
+The migration has been verified with:
+
+- the full Jest test suite passing, with one existing skipped test
+- Auto UI tests passing
+- Resource Draft tests passing
+- UI validation matching tests passing
+- TypeScript passing
+- ESLint passing for affected files
+- the production build passing
+- manual user testing completed successfully
+
+Exact totals may change as tests are added. Use the latest command output as the source of truth.
+
+## Dependencies
+
+AJV and `ajv-draft-04` have been removed as direct dependencies from:
+
+- `package.json`
+- `package-lock.json`
+
+Transitive AJV versions may remain in the lockfile if other tools require them. They must not be removed manually, because this could break build, lint, or editor packages.
+
+## Maintenance Guide
+
+Use these files for future changes:
+
+| Change | File |
+|---|---|
+| General JSON Schema rule | `src/features/auto-ui/schema-validator.ts` |
+| Auto UI errors and null handling | `src/features/auto-ui/auto-ui-validation.ts` |
+| Module and Universal Connector logic | `src/features/auto-ui/module-setting-validation.ts` |
+| Resource Draft behavior | `src/features/resource-version/validation-resource-version-data.ts` |
+| UI error matching | `src/modules/AutoUi/utils/validation-error.ts` |
+
+Always add a focused test when introducing a new schema rule or error path.
+
+## Final Status
+
+The functional AJV migration is complete. All production validation paths use the internal TypeScript validator, and the application does not require `unsafe-eval` for this validation functionality.
+
+The implementation has been verified through automated tests, linting, TypeScript checks, production build, and successful manual user testing.

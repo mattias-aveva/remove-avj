@@ -1,87 +1,106 @@
-# Changelog: AJV-migrering
+# Changelog: AJV Migration
 
-## Sammanfattning
+## Summary
 
-Frontend-valideringen har flyttats från AJV till en egen TypeScript-validator för att uppfylla CSP-kravet `script-src 'self'` utan `unsafe-eval`.
+Frontend JSON Schema validation was migrated from AJV to an internal TypeScript validator to comply with the CSP policy `script-src 'self'` without `unsafe-eval`.
 
-Frontend-validering och omedelbar feedback till användaren finns kvar.
+Frontend validation and immediate user feedback remain available.
 
-## Genomförda ändringar
+## Changes
 
-### Ny intern validator
+### Internal validator
 
-Skapad:
+Created:
 
 - `src/features/auto-ui/schema-validator.ts`
 
-Validatorn använder ingen `eval`, `new Function` eller extern valideringsbibliotek. Den stöder de JSON Schema-regler som används av projektet, bland annat:
+The validator uses no `eval`, `new Function`, runtime code generation, or external validation library.
 
-- typer och `null`
-- `required`, `properties`, `items`
-- `allOf`, `anyOf`, `oneOf`, `not`
-- `$ref`, `enum`, `const`
-- `pattern`, textlängd och numeriska gränser
-- `if/then`, `dependentRequired`
-- `guid`, `uuid` och `int32`
-- listor, objekt och `additionalProperties`
+Supported project-relevant JSON Schema functionality includes:
 
-### Migrerade valideringsflöden
+- types and nullable `null`
+- `required`, `properties`, and `items`
+- `allOf`, `anyOf`, `oneOf`, and `not`
+- `$ref`, `enum`, and `const`
+- `pattern`, `minLength`, and `maxLength`
+- `minimum`, `maximum`, `exclusiveMinimum`, and `exclusiveMaximum`
+- `multipleOf`, `minItems`, `maxItems`, and `uniqueItems`
+- `if/then` and `dependentRequired`
+- `guid`, `uuid`, and `int32`
+- objects, arrays, and `additionalProperties`
 
-Följande använder nu den interna validatorn:
+The `int32` format validates the inclusive range:
 
-- Auto UI-inställningar i `auto-ui-validation.ts`
-- Flow Module-inställningar i `module-setting-validation.ts`
-- Resource Draft-data i `validation-resource-version-data.ts`
+```text
+-2147483648 <= value <= 2147483647
+```
 
-Befintlig funktionalitet har behållits, inklusive:
+Unresolved local `$ref` references now return an explicit validation error instead of being silently accepted.
 
-- `null`-hantering
-- Universal Connector-parametrar
-- `commonSettings`
-- resource-kontroller
-- GUID-feltexten `select a valid item from the list`
-- användarens befintliga felstruktur
+### Migrated validation flows
 
-### Felhantering
+The internal validator is now used by:
 
-- Nästlade `required`-fel behåller full sökväg, exempelvis `simpleSettings/requiredStringSetting`.
-- Nästlade objekt-, dictionary- och arrayfel matchas korrekt i Auto UI.
-- Sibling-fält med liknande namn matchas inte felaktigt.
-- Olösta `$ref` ger ett explicit valideringsfel.
-- `int32` valideras inom intervallet `-2147483648` till `2147483647`.
-- Resource-validering hanterar även fall där endast ett `not`-fel returneras.
+- Auto UI settings: `src/features/auto-ui/auto-ui-validation.ts`
+- Flow Module settings: `src/features/auto-ui/module-setting-validation.ts`
+- Resource Draft data: `src/features/resource-version/validation-resource-version-data.ts`
 
-## Tester
+Existing behavior was preserved, including:
 
-Nya och uppdaterade tester täcker:
+- `null` handling
+- Universal Connector parameters
+- SDK-based `commonSettings`
+- resource-version checks
+- nested element validation
+- the GUID message `select a valid item from the list`
+- the existing `AutoUiValidationError` format
+- Resource Draft error messages
 
-- Auto UI-validering mot backend-schema
-- Flow Module- och Universal Connector-validering
-- Resource Draft för Modbus, DataTrigger och Aveva Historian
-- `$ref`, `if/then`, `dependentRequired` och `not`
-- nästlade required-, objekt-, dictionary- och arrayfel
-- `int32`-gränser
-- UI-matchning av valideringsfel
-- JSON-parsning och ogiltiga inputtyper
+### Error-path handling
 
-## Dependencies och cleanup
+Nested `required` errors now keep their complete path, for example:
 
-- AJV-importer och AJV-anrop är borttagna från produktionskoden.
-- AJV-specifika mockar och tester är borttagna.
-- `ajv` och `ajv-draft-04` är borttagna från `package.json` och `package-lock.json` som direkta dependencies.
-- Eventuella transitiva AJV-versioner lämnas kvar när andra paket kräver dem.
+```text
+simpleSettings/requiredStringSetting
+```
 
-## Verifiering
+Nested object, dictionary, and array errors are correctly matched to their UI components. Similar sibling paths are not matched accidentally.
 
-Genomförda kontroller:
+### Dependency cleanup
 
-- Automatiserade tester: `950` passerade, `1` skip
-- ESLint: passerar
-- TypeScript: passerar
-- Produktionsbuild: passerar
-- Användartester: genomförda med gott resultat
-- `package-lock.json`: giltig och utan ändrade paketversioner
+Removed as direct dependencies:
+
+- `ajv`
+- `ajv-draft-04`
+
+AJV may still exist transitively in `package-lock.json` when required by other tools. Those transitive dependencies are intentionally retained.
+
+## Tests
+
+Added or updated tests cover:
+
+- Auto UI validation against a backend-style schema
+- Flow Module and Universal Connector validation
+- Resource Draft validation for Modbus, DataTrigger, and Aveva Historian
+- `$ref`, `if/then`, `dependentRequired`, and `not`
+- nested required, object, dictionary, and array errors
+- `int32` boundaries
+- UI validation-error matching
+- JSON parsing and unsupported input types
+
+## Verification
+
+Completed checks:
+
+- Full test suite: `950` tests passed, `1` skipped
+- ESLint: passed
+- TypeScript: passed
+- Production build: passed
+- Manual user testing: completed successfully
+- `package-lock.json`: valid and package versions preserved
 
 ## Status
 
-AJV är funktionellt ersatt i projektets tre valideringsflöden. Ändringen är testad automatiskt och manuellt och är redo för pull request.
+The functional AJV migration is complete. All production validation flows use the internal TypeScript validator and do not require `unsafe-eval` for this validation functionality.
+
+The implementation is verified by automated tests, linting, TypeScript checks, a production build, and successful manual user testing. The change is ready for pull request review.
